@@ -13,13 +13,18 @@ import edu.wpi.first.wpilibj.smartdashboard.SmartDashboard;
 import frc.robot.utils.constants.DriveConstants;
 
 public class SwerveModule {
+    private static final long ENCODER_INIT_DELAY_MS = 2000;
+    
     private final SparkMax driveMotor;
     private final SparkMax steerMotor;
     private final AnalogInput absoluteEncoder;
     private final PIDController steeringPIDController;
     private final double absoluteEncoderOffsetRad;
     private final String moduleName;
-
+    
+    private volatile boolean isInitialized = false;
+    private volatile long initStartTime;
+    
     public SwerveModule(
         int driveMotorId,
         int steerMotorId,
@@ -31,18 +36,18 @@ public class SwerveModule {
     ) {
         this.absoluteEncoderOffsetRad = absoluteEncoderOffset;
         this.moduleName = moduleName;
-
+        
         // Configure drive motor
         driveMotor = new SparkMax(driveMotorId, MotorType.kBrushless);
         configureSparkMax(driveMotor, driveMotorReversed);
-
+        
         // Configure steering motor
         steerMotor = new SparkMax(steerMotorId, MotorType.kBrushless);
         configureSparkMax(steerMotor, steerMotorReversed);
-
+        
         // Configure absolute encoder
         absoluteEncoder = new AnalogInput(absoluteEncoderId);
-
+        
         // Configure PID controllers
         steeringPIDController = new PIDController(
             DriveConstants.STEERING_P,
@@ -50,10 +55,28 @@ public class SwerveModule {
             DriveConstants.STEERING_D
         );
         steeringPIDController.enableContinuousInput(-Math.PI, Math.PI);
-
-        resetEncoders();
+        
+        // Start initialization timer
+        initStartTime = System.currentTimeMillis();
     }
-
+    
+    public synchronized boolean isReady() {
+        if (!isInitialized) {
+            long currentTime = System.currentTimeMillis();
+            if (currentTime - initStartTime >= ENCODER_INIT_DELAY_MS) {
+                initializeEncoders();
+                isInitialized = true;
+            }
+            return false;
+        }
+        return true;
+    }
+    
+    private void initializeEncoders() {
+        resetEncoders();
+        // Add any other necessary initialization steps
+    }
+    
     private void configureSparkMax(SparkMax motor, boolean inverted) {
         SparkMaxConfig config = new SparkMaxConfig();
         config.inverted(inverted);
@@ -68,60 +91,75 @@ public class SwerveModule {
         }
         motor.configure(config, SparkMax.ResetMode.kResetSafeParameters, SparkMax.PersistMode.kPersistParameters);
     }
-
+    
     public double getAbsoluteEncoderRad() {
+        if (!isReady()) {
+            throw new IllegalStateException("Module not initialized yet");
+        }
         double angle = absoluteEncoder.getVoltage() / 5.0 * 2.0 * Math.PI;
         return angle - absoluteEncoderOffsetRad;
     }
-
+    
     public void resetEncoders() {
+        if (!isReady()) {
+            throw new IllegalStateException("Module not initialized yet");
+        }
         driveMotor.getEncoder().setPosition(0);
         steerMotor.getEncoder().setPosition(getAbsoluteEncoderRad());
     }
-
-    public SwerveModuleState getState() {
+    
+    public synchronized SwerveModuleState getState() {
+        if (!isReady()) {
+            throw new IllegalStateException("Module not initialized yet");
+        }
         return new SwerveModuleState(
             driveMotor.getEncoder().getVelocity(),
             new Rotation2d(steerMotor.getEncoder().getPosition())
         );
     }
-
-    public SwerveModulePosition getPosition() {
+    
+    public synchronized SwerveModulePosition getPosition() {
+        if (!isReady()) {
+            throw new IllegalStateException("Module not initialized yet");
+        }
         return new SwerveModulePosition(
             driveMotor.getEncoder().getPosition(),
             new Rotation2d(steerMotor.getEncoder().getPosition())
         );
     }
-
+    
     public void setDesiredState(SwerveModuleState desiredState) {
+        if (!isReady()) {
+            throw new IllegalStateException("Module not initialized yet");
+        }
         // Optimize the desired state to avoid spinning more than 90 degrees
         @SuppressWarnings("deprecation")
         SwerveModuleState optimizedState = SwerveModuleState.optimize(desiredState,
             new Rotation2d(steerMotor.getEncoder().getPosition()));
-
+        
         // Apply cosine compensation
         double currentAngle = steerMotor.getEncoder().getPosition();
         double angleError = optimizedState.angle.getRadians() - currentAngle;
         double cosCompFactor = Math.cos(angleError);
-
+        
         // Create new state with compensated speed
         SwerveModuleState compensatedState = new SwerveModuleState(
             optimizedState.speedMetersPerSecond * cosCompFactor,
             optimizedState.angle
         );
-
+        
         // Calculate steering output
         double steeringOutput = steeringPIDController.calculate(
             currentAngle,
             compensatedState.angle.getRadians()
         );
-
+        
         // Set motor outputs
         steerMotor.set(steeringOutput);
         driveMotor.getClosedLoopController()
             .setReference(compensatedState.speedMetersPerSecond,
                 SparkMax.ControlType.kVelocity);
-
+        
         // Log data
         SmartDashboard.putNumber(
             "Module " + moduleName + " Angle",
@@ -132,7 +170,7 @@ public class SwerveModule {
             driveMotor.getEncoder().getVelocity()
         );
     }
-
+    
     public void stop() {
         driveMotor.set(0);
         steerMotor.set(0);
