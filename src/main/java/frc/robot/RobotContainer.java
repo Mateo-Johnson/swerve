@@ -39,6 +39,7 @@ public class RobotContainer {
         subsystem.setDefaultCommand(subsystem.run(defaultAction));
     }
 
+    @SuppressWarnings("unused")
     private void configureBindings() {
         // Your trigger bindings here...
     }
